@@ -238,12 +238,13 @@ async function driveFindOrCreateFolder(name, parentId){
 }
 
 async function ensureDriveFolders(){
-  if(drive.folders && drive.folders.root && drive.folders.mercado && drive.folders.gasolina && drive.folders.respaldos) return drive.folders;
+  if(drive.folders && drive.folders.root && drive.folders.mercado && drive.folders.gasolina && drive.folders.otros && drive.folders.respaldos) return drive.folders;
   const root = await driveFindOrCreateFolder("Will's Grill - Control de Feria", null);
   const respaldos = await driveFindOrCreateFolder("Respaldos", root);
   const mercado = await driveFindOrCreateFolder("Facturas Mercado", root);
   const gasolina = await driveFindOrCreateFolder("Facturas Gasolina", root);
-  drive.folders = { root, respaldos, mercado, gasolina, backupFileId: drive.folders?.backupFileId || null };
+  const otros = await driveFindOrCreateFolder("Otros Gastos", root);
+  drive.folders = { root, respaldos, mercado, gasolina, otros, backupFileId: drive.folders?.backupFileId || null };
   saveDriveFolders(drive.folders);
   return drive.folders;
 }
@@ -291,7 +292,8 @@ function scheduleDriveBackup(){
 async function driveUploadFactura(mov, feria){
   if(!drive.connected || !mov.fotoFactura) return;
   const folderId = mov.tipo === "Factura Mercado" ? drive.folders?.mercado
-                  : mov.tipo === "Gasolina" ? drive.folders?.gasolina : null;
+                  : mov.tipo === "Gasolina" ? drive.folders?.gasolina
+                  : mov.tipo === "Otro gasto" ? drive.folders?.otros : null;
   if(!folderId) return;
   try{
     await ensureDriveFolders();
@@ -341,7 +343,7 @@ window.addEventListener("load", ()=>{
 ========================================================= */
 const STORAGE_KEY = "control_feria_data_v1";
 const MEDIOS_PAGO = ["Efectivo", "Tarjeta"];
-const TIPOS = ["Venta", "Factura Mercado", "Gasolina", "Otro gasto", "Pago a trabajador", "Consignación"];
+const TIPOS = ["Venta", "Factura Mercado", "Gasolina", "Otro gasto", "Pago a trabajador", "Propina", "Consignación"];
 const CATEGORIAS = ["Alquiler / stand", "Empaques y desechables", "Hielo", "Gas", "Imprevistos", "Sueldo", "Reembolso"];
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
@@ -435,11 +437,11 @@ function getTrabajadoresEnFecha(feria, fecha){
 
 const ICONS = {
   "Venta": "💵", "Factura Mercado": "🧺", "Gasolina": "⛽", "Otro gasto": "🧾",
-  "Pago a trabajador": "👥", "Consignación": "🏦",
+  "Pago a trabajador": "👥", "Propina": "🍬", "Consignación": "🏦",
 };
 const TONE = {
   "Venta": "var(--green)", "Factura Mercado": "var(--red)", "Gasolina": "var(--red)",
-  "Otro gasto": "var(--red)", "Pago a trabajador": "var(--red)", "Consignación": "var(--blue)",
+  "Otro gasto": "var(--red)", "Pago a trabajador": "var(--red)", "Propina": "var(--gold)", "Consignación": "var(--blue)",
 };
 const CATEGORY_COLORS = {
   "Mercado": "#C9963F", "Gasolina": "#BD6B57", "Otros gastos": "#6E93A0", "Pago a trabajadores": "#7FA872",
@@ -465,12 +467,14 @@ function computeTotals(movs){
   const propinaTarjeta = movs.filter(m=>m.tipo==="Venta" && m.medioPago==="Tarjeta").reduce((a,m)=>a+(Number(m.propina)||0),0);
   const propinaRetencion = propinaTarjeta * 0.10;
   const propinaRepartible = propinas - propinaRetencion;
+  const propinaPagada = sum("Propina");
+  const propinaPendiente = propinaRepartible - propinaPagada;
   const efectivoVentas = sum("Venta","Efectivo");
   const tarjetaVentas = sum("Venta","Tarjeta");
-  const efectivoGastos = sum("Factura Mercado","Efectivo")+sum("Gasolina","Efectivo")+sum("Otro gasto","Efectivo")+sum("Pago a trabajador","Efectivo");
+  const efectivoGastos = sum("Factura Mercado","Efectivo")+sum("Gasolina","Efectivo")+sum("Otro gasto","Efectivo")+sum("Pago a trabajador","Efectivo")+propinaPagada;
   return {
     ventas, mercado, gasolina, otro, pagos, gastos, consignado, propinas,
-    propinaEfectivo, propinaTarjeta, propinaRetencion, propinaRepartible,
+    propinaEfectivo, propinaTarjeta, propinaRetencion, propinaRepartible, propinaPagada, propinaPendiente,
     utilidad: ventas-gastos, efectivoVentas, tarjetaVentas,
     cajaEsperada: efectivoVentas - efectivoGastos - consignado,
   };
@@ -616,10 +620,10 @@ function renderMovForm(feria){
   if(!state.showMovForm) return "";
   const tipo = state.movTipo;
   const isEditing = !!state.editingMovId;
-  const needsMedio = tipo !== "Consignación";
-  const needsTrabajador = tipo === "Pago a trabajador";
+  const needsMedio = tipo !== "Consignación" && tipo !== "Propina";
+  const needsTrabajador = tipo === "Pago a trabajador" || tipo === "Propina";
   const needsCategoria = tipo === "Otro gasto";
-  const needsFoto = tipo === "Factura Mercado" || tipo === "Gasolina";
+  const needsFoto = tipo === "Factura Mercado" || tipo === "Gasolina" || tipo === "Otro gasto";
   const needsPropina = tipo === "Venta";
   const trabajadores = getTrabajadores(feria);
   const d = state.tempMovDraft;
@@ -642,6 +646,7 @@ function renderMovForm(feria){
       ${needsCategoria ? `<label class="field"><span>Categoría</span><select id="mCategoria">${CATEGORIAS.map(c=>`<option ${c===d.categoria?"selected":""}>${c}</option>`).join("")}</select></label>` : ""}
       <label class="field"><span>Descripción (opcional)</span><input id="mDescripcion" placeholder="Nota corta" value="${escapeHtml(d.descripcion)}" /></label>
     </div>
+    ${tipo === "Propina" ? `<div class="photo-hint" style="margin:-6px 0 4px;">🍬 La propina pagada se registra siempre como efectivo y se descuenta de la caja esperada.</div>` : ""}
     ${needsFoto ? renderPhotoCapture() : ""}
     <div class="row" style="justify-content:flex-end; margin-top:6px;">
       <button class="btn btn-ghost" id="cancelMovForm">Cancelar</button>
@@ -721,6 +726,8 @@ function renderFeriaTab(){
         <div class="divider"></div>
         <div class="row between" style="font-size:12px;"><span style="color:var(--dim);">Tips retenidos (10% solo tarjeta)</span><span style="color:var(--red);">-${fmt(t.propinaRetencion)}</span></div>
         <div class="row between" style="font-size:12px;margin-top:3px;"><span style="color:var(--dim);">Resto a repartir</span><span style="font-weight:600;">${fmt(t.propinaRepartible)}</span></div>
+        <div class="row between" style="font-size:12px;margin-top:3px;"><span style="color:var(--dim);">Ya pagado a trabajadores</span><span style="color:var(--green);">${fmt(t.propinaPagada)}</span></div>
+        <div class="row between" style="font-size:12px;margin-top:3px;"><span style="color:var(--dim);">Pendiente por repartir</span><span style="font-weight:600; color:${t.propinaPendiente>0?"var(--gold)":"var(--dim)"};">${fmt(t.propinaPendiente)}</span></div>
         <div class="divider"></div>
         <div style="font-size:11px;color:var(--dim);margin-bottom:2px;">${fmt(propinaPersona)} por persona · ${trabajadoresFeria.length} trabajador(es)</div>
         <div style="margin-top:8px; display:flex; flex-direction:column; gap:3px;">
@@ -1196,7 +1203,7 @@ function attachEvents(){
     const categoriaEl = document.getElementById("mCategoria");
     const trabajadorEl = document.getElementById("mTrabajador");
     const fecha = document.getElementById("mFecha").value || todayISO();
-    const medioPago = medioEl ? medioEl.value : "";
+    const medioPago = medioEl ? medioEl.value : (tipo === "Propina" ? "Efectivo" : "");
     const propina = propinaEl ? (Number(propinaEl.value)||0) : 0;
     const categoria = categoriaEl ? categoriaEl.value : (tipo==="Pago a trabajador" ? "Sueldo" : "");
     const trabajador = trabajadorEl ? trabajadorEl.value : "";
@@ -1328,7 +1335,7 @@ const XLS_GOLD="FFC9963F", XLS_GOLD_SOFT="FFE3C583", XLS_DARK="FF2A2317", XLS_DA
       XLS_DIM_TEXT="FF8A7F68", XLS_ROW_ALT="FFF7F0E3", XLS_ROW_BASE="FFFFFFFF", XLS_BORDER_SOFT="FFE3D9C2";
 const XLS_TABCOLORS = {
   RESUMEN: XLS_GOLD, FERIAS: XLS_GOLD, VENTAS: "FF7FA872", MERCADO: "FFBD6B57", GASOLINA: "FFBD6B57",
-  "OTROS GASTOS": "FFBD6B57", PROPINAS: XLS_GOLD, PAGOS: "FFBD6B57", CONSIGNACIONES: "FF6E93A0", INVENTARIO: "FF8A6B34",
+  "OTROS GASTOS": "FFBD6B57", PROPINAS: XLS_GOLD, "PROPINAS PAGADAS": XLS_GOLD, PAGOS: "FFBD6B57", CONSIGNACIONES: "FF6E93A0", INVENTARIO: "FF8A6B34",
 };
 
 function xlsStyleTitleRow(ws, rowNum, colCount){
@@ -1469,7 +1476,7 @@ async function exportarExcel(){
     const t = computeTotals(movsFeria);
     const trabajadoresFeria = getTrabajadores(feria);
     const efectivoGastos = movsFeria
-      .filter(m=>["Factura Mercado","Gasolina","Otro gasto","Pago a trabajador"].includes(m.tipo) && m.medioPago==="Efectivo")
+      .filter(m=>["Factura Mercado","Gasolina","Otro gasto","Pago a trabajador","Propina"].includes(m.tipo) && m.medioPago==="Efectivo")
       .reduce((a,m)=>a+(Number(m.valor)||0),0);
 
     wsResumen.addRow([`FERIA: ${feria.nombre}`]); xlsStyleFeriaBanner(wsResumen, wsResumen.lastRow.number, 2);
@@ -1490,6 +1497,8 @@ async function exportarExcel(){
     xlsAddKV(wsResumen, "Propinas en tarjeta", t.propinaTarjeta, {money:true});
     xlsAddKV(wsResumen, "Tips retenidos (10% solo tarjeta)", t.propinaRetencion, {money:true});
     xlsAddKV(wsResumen, "Resto a repartir", t.propinaRepartible, {money:true});
+    xlsAddKV(wsResumen, "Propinas pagadas a trabajadores", t.propinaPagada, {money:true});
+    xlsAddKV(wsResumen, "Pendiente por repartir", t.propinaPendiente, {money:true});
     wsResumen.addRow(["El reparto por persona varía cada día según quién trabajó — ver hoja PROPINAS",""]);
     xlsStyleSubtitleRow(wsResumen, wsResumen.lastRow.number, 2);
     wsResumen.addRow([]);
@@ -1519,6 +1528,8 @@ async function exportarExcel(){
   xlsAddKV(wsResumen, "Consignado", tAll.consignado, {money:true});
   xlsAddKV(wsResumen, "Propinas", tAll.propinas, {money:true});
   xlsAddKV(wsResumen, "Tips retenidos (10% solo tarjeta)", tAll.propinaRetencion, {money:true});
+  xlsAddKV(wsResumen, "Propinas pagadas a trabajadores", tAll.propinaPagada, {money:true});
+  xlsAddKV(wsResumen, "Pendiente por repartir", tAll.propinaPendiente, {money:true});
   xlsAddKV(wsResumen, "Caja esperada (efectivo)", tAll.cajaEsperada, {money:true});
   xlsAddKV(wsResumen, "N° de ferias incluidas", ferias.length, {});
   wsResumen.views = [{ state:"frozen", ySplit:2 }];
@@ -1568,9 +1579,10 @@ async function exportarExcel(){
   const otros = sorted.filter(m=>m.tipo==="Otro gasto");
   xlsBuildTableSheet(wb, {
     name:"OTROS GASTOS", title:"OTROS GASTOS", subtitle:`Total otros gastos: ${fmt(tAll.otro)}   |   N° de gastos: ${otros.length}`,
-    headers:["FECHA","CATEGORÍA","VALOR","MEDIO DE PAGO","DESCRIPCIÓN","FERIA"],
-    rows: otros.map(m=>[m.fecha, m.categoria||"", Number(m.valor)||0, m.medioPago||"", m.descripcion||"", feriaNombre(m.feriaId)]),
-    moneyCols:[3], widths:[11,20,11,13,26,18],
+    headers:["FECHA","CATEGORÍA","VALOR","MEDIO DE PAGO","FOTO FACTURA","DESCRIPCIÓN","FERIA"],
+    rows: otros.map(m=>[m.fecha, m.categoria||"", Number(m.valor)||0, m.medioPago||"", fotoValor(m), m.descripcion||"", feriaNombre(m.feriaId)]),
+    moneyCols:[3], widths:[11,20,11,13,20,26,18],
+    linkColIdx:5, linkTargets: otros.map(m=>m.fotoDriveLink||null),
   });
 
   /* ============ PROPINAS (agrupadas por día, con el reparto real de cada día) ============ */
@@ -1606,6 +1618,16 @@ async function exportarExcel(){
     headers:["FECHA","PROPINA TOTAL","PROPINA EFECTIVO","PROPINA TARJETA","TIPS RETENIDOS (10% TARJETA)","RESTO A REPARTIR","N° TRABAJADORES","PROPINA POR PERSONA","TRABAJADORES","FERIA"],
     rows: propinasRows,
     moneyCols:[2,3,4,5,6,8], widths:[11,13,14,13,18,15,14,16,32,18],
+  });
+
+  /* ============ PROPINAS PAGADAS (registros reales del tipo "Propina") ============ */
+  const propinasPagadas = sorted.filter(m=>m.tipo==="Propina");
+  xlsBuildTableSheet(wb, {
+    name:"PROPINAS PAGADAS", title:"PROPINAS PAGADAS A TRABAJADORES",
+    subtitle:`Total pagado: ${fmt(tAll.propinaPagada)}   |   N° de pagos: ${propinasPagadas.length}   |   Pendiente por repartir: ${fmt(tAll.propinaPendiente)}`,
+    headers:["FECHA","VALOR","TRABAJADOR","DESCRIPCIÓN","FERIA"],
+    rows: propinasPagadas.map(m=>[m.fecha, Number(m.valor)||0, m.trabajador||"", m.descripcion||"", feriaNombre(m.feriaId)]),
+    moneyCols:[2], widths:[11,11,16,26,18],
   });
 
   /* ============ PAGOS ============ */
